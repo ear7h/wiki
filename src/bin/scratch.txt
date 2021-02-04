@@ -1,0 +1,415 @@
+
+struct JoinedSlice<'a> {
+    l : &'a [u8],
+    r : &'a [u8],
+}
+
+impl JoinedSlice {
+    fn len(&self) -> usize {
+        l.len() + r.len();
+    }
+
+    fn get(&self, idx : usize) -> Option<u8> {
+        if idx < l.len() {
+            Ok(self.l[idx])
+        } else if idx > l.len() {
+            self.r.get(idx - l.len())
+        } else {
+            // edge case idx == 0
+            None
+        }
+    }
+
+    fn iter(&self) -> JoinedSliceIter {
+        JoinedSliceIter::new(self)
+    }
+}
+
+struct JoinedSliceIter<'a> {
+    js : JoinedSlice<'a>,
+    start : usize,
+    end : usize,
+}
+
+impl<'a> JoinedSliceIter<'a> {
+    fn new(js : JoinedSlice) -> Self {
+        let start = 0;
+        let end = js.len();
+        JoinedSliceIter{ js, start, end };
+    }
+}
+
+impl <'a> Iterator for JoinedSliceIter<'a> {
+    type Iterm = u8;
+
+    fn next(&mut self) -> Option<u8> {
+
+    }
+}
+
+struct RingBufLines<'a> {
+    inner : &'a RingBuf,
+    front_idx : usize,
+    back_idx : usize,
+}
+
+impl<'a> RingBufLines<'a> {
+
+    fn new(inner : &'a RingBuf) -> RingBufLines<'a> {
+        RingBufLines {
+            inner: inner,
+            front_idx : 0,
+            end_idx : inner.len;
+        }
+    }
+
+    fn next(&mut self, dest : &mut String, replace : &str) -> bool {
+        unimplemented!();
+    }
+
+    fn next_back<'out>(&mut self, dest : &'out mut Vec, replace : &str) -> &'out str {
+        if self.front_idx >= self.end_idx {
+            return false
+        }
+
+        dest.truncate(0);
+        let (l, r) = self.inner.chunks();
+
+
+        let it = if self.end_idx <= l.len() {
+            // only left side
+            l[self.start_idx..self.end_idx].iter().rev()
+        } else if self.start > l.len() {
+            // only right side
+            r[(self.start_idx - l.len())..(self.end_idx - l.len())].iter().rev()
+        } else {
+            r[..(self.end_idx - l.len())].iter().rev()
+                .chain(
+                    l[self.start_idx..].iter().rev()
+                )
+        };
+
+
+        for c in it {
+            self.end_idx -= 1;
+            if c == '\n' {
+                break;
+            }
+
+            dest.push(c);
+        }
+
+
+    }
+}
+
+fn rfind<T : Eq>(s : &[T]) -> Option<usize> {
+    for (idx, v) in s.iter().enumerate().rev() {
+        if v == idx {
+            return Ok(idx);
+        }
+    }
+
+    None
+}
+
+/// Ring buffer of bytes
+struct RingBuf {
+    ptr : *mut u8,
+    start : usize,
+    len : usize,
+    cap : usize,
+}
+
+
+impl RingBuf {
+    fn new(cap : usize) -> RingBuf {
+        let (ptr, len, cap)  = Vec::with_capacity(cap).into_raw_parts();
+
+        RingBuf {
+            ptr : ptr,
+            start : 0,
+            len : len,
+            cap : cap,
+        }
+    }
+
+    fn chunks(&self) -> (&[u8], &[u8]) {
+        unsafe {
+            (
+                std::slice::from_raw_parts(
+                    self.ptr.offset(self.start as isize),
+                    (self.cap - self.start).min(self.len),
+                ),
+                std::slice::from_raw_parts(
+                    self.ptr,
+                    self.len - (self.cap - self.start).min(self.len),
+                ),
+            )
+        }
+
+    }
+
+    fn write_to<W : Write>(self, w : W) -> Result<()> {
+        let (l, r) = self.chunks();
+        w.write(l)?;
+        w.write(r)
+    }
+
+
+    fn next_idx(&self) -> usize {
+        (self.start + self.len) % self.cap
+    }
+
+    fn push_char(&mut self, c : char) {
+
+        let mut b : [u8; 4] = [0, 0, 0, 0];
+        let s = c.encode_utf8(&mut b);
+        self.push_slice(s.as_slice());
+    }
+
+
+    fn push_slice(&mut self, s : &[u8]) {
+        if s.len() == 0 {
+            return;
+        }
+
+        let mut start = if s.len() > self.cap {
+            s.len() - self.cap
+        } else {
+            0
+        };
+
+
+        let s = s[start..];
+
+        // copying aligned to the beginning of the allocation
+        if s.len() == self.cap || (self.start + self.len) == 0 {
+            unsafe  {
+                self.ptr.copy_from(s.as_ptr(), s.len());
+            }
+
+            self.start = 0;
+            self.len = (self.len + s.len()).min(self.cap);
+            return;
+        }
+
+        let next_idx = self.next_idx();
+
+        let l1 = (self.cap - next_idx).min(s.len());
+
+        unsafe {
+            self.ptr.offset(next_idx as isize).copy_from(s.as_ptr(), l1);
+        }
+
+
+        let l2 = s.len() - l1;
+
+        unsafe {
+            self.ptr.copy_from(s.as_ptr().offset(l1 as isize), l2);
+        }
+
+//        println!("l1: {}, l2: {}", l1, l2);
+
+        self.start = if l2 == 0 {
+            self.start
+        } else {
+            (self.start + self.len + s.len()) % self.cap
+        };
+
+        self.len = (self.len + s.len()).min(self.cap);
+    }
+}
+
+impl Drop for RingBuf {
+    fn drop(&mut self) {
+        let v = unsafe { Vec::from_raw_parts(self.ptr, 0, self.cap) };
+        std::mem::drop(v);
+    }
+}
+
+impl std::fmt::Debug for RingBuf {
+    fn fmt(&self, f : &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = unsafe {
+           std::slice::from_raw_parts::<u8>(self.ptr, self.cap)
+        };
+
+        f.debug_struct("RingBuf")
+            .field("ptr", &s)
+            .field("start", &self.start)
+            .field("len", &self.len)
+            .field("cap", &self.cap)
+            .finish()
+    }
+}
+
+// taken from stdlib https://doc.rust-lang.org/src/core/str/mod.rs.html#193-205
+fn is_char_boundary(b : u8) -> bool {
+    (b as i8) >= -0x40
+}
+
+/*
+struct State<W : Write, Wt : Write> {
+    output : W,
+    term : RawTerminal<Wt>,
+    prompts : (String, String),
+    buf : String,
+    multiline : bool,
+}
+
+impl<W : Write, Wt : Write> State<W, Wt> {
+    fn backspace(&mut self) -> Result<()> {
+        if self.buf.len() == 0 {
+            return Ok(());
+        }
+
+        self.buf.truncate(self.buf.len() - 1);
+        write!(self.term,
+            "{} {}",
+            cursor::Left(1),
+            cursor::Left(1))?;
+        self.flush()
+    }
+
+    fn push(&mut self, c : char) -> Result<()> {
+        if c == '\n' {
+            if self.buf.ends_with("\\") {
+
+                self.multiline = true;
+                self.buf.truncate(self.buf.len() - 1);
+                self.buf.push('\n');
+
+                write!(self.term, "{} \n\r", cursor::Left(1))?;
+            } else {
+                write!(self.term, "\n\r")?;
+                self.output.write(self.buf.as_bytes())?;
+                self.output.flush()?;
+                self.reset();
+            }
+            return Ok(());
+        }
+
+        if c == 'q' {
+            panic!("quit");
+        }
+
+        self.buf.push(c);
+        write!(self.term, "{}", c)
+    }
+
+    fn flush(&mut self) -> Result<()>{
+        self.term.flush()
+    }
+
+    fn reset(&mut self) {
+        self.multiline = false;
+        self.buf.truncate(0);
+    }
+
+    fn write_prompt(&mut self) -> Result<()> {
+        write!(self.term, "{}", if self.multiline {
+            self.prompts.1.as_str()
+        } else {
+            self.prompts.0.as_str()
+        })
+    }
+}
+*/
+
+fn main() {
+    let mut lb = LineBuf::new(80, 24);
+    //lb.write(b"asd");
+    lb.push_bytes(&[0xe2, 0x89]);
+    lb.push_bytes(&[0xa0, 0x0a, 0x0a]);
+}
+/*
+
+fn main() {
+    let stdin = stdin();
+
+    let mut child = Command::new("cat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut child_out = child.stdout.take().unwrap();
+    let mut parent_out = stdout();
+    thread::spawn(move || {
+        let buf = &mut [0 as u8; 4 * 1 << 10];
+
+        loop {
+            let len = match child_out.read(buf) {
+                Ok(0) => return,
+                Ok(len) => len,
+                Err(e) if e.kind() == ErrorKind::Interrupted => {
+                    continue;
+                },
+                Err(_) => {
+                    break;
+                },
+            };
+
+
+            let mut chunks = buf[..len].split(|x| ('\n' as u8).eq(x));
+            if let Some(chunk) = chunks.next() {
+                parent_out.write(chunk).unwrap();
+
+                for chunk in chunks {
+                    parent_out.write(b"\n\r").unwrap();
+                    parent_out.write(chunk).unwrap();
+                }
+            }
+            parent_out.flush().unwrap();
+        }
+    });
+
+    let term = stdout().into_raw_mode().unwrap();
+
+    let mut state = State {
+        output : child.stdin.take().unwrap(),
+        term : term,
+        prompts : ("> ".to_string(), "\\ ".to_string()),
+        buf : Default::default(),
+        multiline : false,
+    };
+
+    state.write_prompt().unwrap();
+    state.flush().unwrap();
+
+    for key in stdin.keys() {
+        match key.unwrap() {
+            Key::Char(c) => state.push(c),
+            Key::Backspace | Key::Ctrl('h') => state.backspace(),
+            x => { println!("{:?}", x); Ok(()) },
+            //_ => Ok(()),
+        }.unwrap();
+
+        state.flush().unwrap();
+    }
+}
+
+fn main() {
+
+    let mut buf = RingBuf::new(10);
+    println!("{:?}", buf);
+
+    buf.push_str("asd");
+    println!("{}", buf);
+    println!("{:?}", buf);
+
+    buf.push_str("qwe");
+    println!("{}", buf);
+    println!("{:?}", buf);
+
+    buf.push_str("zxc");
+    println!("{}", buf);
+    println!("{:?}", buf);
+
+    buf.push_str("≠≠≠≠");
+    println!("{}", buf);
+    println!("{:x?}", format!("{}", buf).bytes().collect::<Vec<_>>());
+    println!("{:x?}", buf);
+}
+
+*/
